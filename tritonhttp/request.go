@@ -11,3 +11,8 @@ type Request struct {
 	Host  string // determine from the "Host" header
 	Close bool   // determine from the "Connection" header
 }
+
+// Initialize request
+func (r *Request) init() {
+	r.Headers = make(map[string]string)
+}
