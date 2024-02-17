@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"strconv"
+	"time"
 )
 
 type Response struct {
@@ -49,8 +51,8 @@ var statusText = map[int]string{
 // Initialize response
 func (res *Response) init() {
 	res.Headers = make(map[string]string)
-	// res.FilePath = "hello-world.txt"
-	// r.FilePath = filepath.Join(s.DocRoot, "hello-world.txt")
+	// Set Date header
+	res.Headers["Date"] = FormatTime(time.Now())
 }
 
 // HandleBadRequest prepares res to be a 200 Ok
@@ -63,7 +65,7 @@ func (res *Response) HandleOk() {
 // HandleBadRequest prepares res to be a 400 Bad Request
 // When the client sent a malformed or invalid request
 // that the server doesn’t understand
-func (res *Response) HandlBadRequest() {
+func (res *Response) HandleBadRequest() {
 	res.Proto = ProtoVersion
 	res.StatusCode = StatusBadRequest
 	res.FilePath = ""
@@ -72,27 +74,36 @@ func (res *Response) HandlBadRequest() {
 
 // HandleBadRequest prepares res to be a 404 Not Found
 // When the requested content wasn’t there
-func (res *Response) HandlNotFound() {
+func (res *Response) HandleNotFound() {
 	res.Proto = ProtoVersion
 	res.StatusCode = StatusNotFound
 	res.FilePath = ""
 }
 
-func (res *Response) CreateHeaders() {
+func (res *Response) SetHeadersAndBody(fPath string, fInfo os.FileInfo) error {
 
-	// Date
+	// Set response FilePath
+	res.FilePath = fPath
+
+	file, err := os.ReadFile(fPath)
+	if err != nil {
+		return err
+	}
 
 	// Last-Modified
+	res.Headers["Last-Modified"] = FormatTime(fInfo.ModTime())
 
 	// Content-Type
-	res.Headers["Content-Type"] = MIMETypeByExtension(path.Ext(res.FilePath))
+	res.Headers["Content-Type"] = MIMETypeByExtension(path.Ext(fPath))
 
 	// Content-Length
+	res.Headers["Content-Length"] = strconv.Itoa(len(file))
 
-	// Connection
-	if res.StatusCode == StatusBadRequest {
-		res.Headers["Connection"] = "close"
-	}
+	// Set Body content
+	res.Body = file
+
+	return nil
+
 }
 
 func (res *Response) SetBody(body string) {
@@ -102,6 +113,11 @@ func (res *Response) SetBody(body string) {
 
 func (res *Response) Write(w io.Writer) error {
 	bw := bufio.NewWriter(w)
+
+	// Add "Connection" header if necessary
+	if res.StatusCode == StatusBadRequest {
+		res.Headers["Connection"] = "close"
+	}
 
 	// Writing initial response line (e.g. "HTTP/1.1 200 OK\r\n")
 	statusLine := fmt.Sprintf("%v %v %v\r\n", res.Proto, res.StatusCode, statusText[res.StatusCode])

@@ -69,6 +69,7 @@ func (s *Server) ListenAndServe() error {
 
 }
 
+// Start reading & processing request
 func (s *Server) HandleRequest(conn net.Conn) {
 
 	br := bufio.NewReader(conn)
@@ -102,7 +103,7 @@ func (s *Server) HandleRequest(conn net.Conn) {
 			log.Printf("Timeout from the server - net.Error")
 			// Send 400 Bad Request response
 			res := PrepareResponse()
-			res.HandlBadRequest()
+			res.HandleBadRequest()
 			err2 := res.Write(conn)
 			if err2 != nil {
 				log.Printf("Send 400 request for timeout from server failed - %v", err)
@@ -117,7 +118,7 @@ func (s *Server) HandleRequest(conn net.Conn) {
 			log.Printf("Error raised when reading request - %v\n", err)
 			// Send 400 Bad Request response
 			res := PrepareResponse()
-			res.HandlBadRequest()
+			res.HandleBadRequest()
 			err2 := res.Write(conn)
 			if err2 != nil {
 				log.Printf("Send 400 request for unsuccessful reading failed - %v", err)
@@ -126,22 +127,40 @@ func (s *Server) HandleRequest(conn net.Conn) {
 			return
 		}
 
-		// Error 4: Empty Host in header
-		if req.Host == "" {
-			log.Printf("Error raised for empty host\n")
+		// "Error" 4: Connection: close
+		if req.Close {
+			log.Printf("Received closing request from client %v\n", conn.RemoteAddr())
+			log.Printf("Closing connection with client %v\n", conn.RemoteAddr())
 			// Send 400 Bad Request response
 			res := PrepareResponse()
-			res.HandlBadRequest()
+			res.HandleBadRequest()
 			err2 := res.Write(conn)
 			if err2 != nil {
 				log.Printf("Send 400 request for empty host failed - %v", err)
 			}
+			conn.Close()
+			return
+		}
+
+		// Error 5: Empty Host in header
+		if req.Host == "" {
+			log.Printf("Error raised for empty host\n")
+			// Send 400 Bad Request response
+			res := PrepareResponse()
+			res.HandleBadRequest()
+			err2 := res.Write(conn)
+			if err2 != nil {
+				log.Printf("Send 400 request for empty host failed - %v", err)
+			}
+			conn.Close()
+			return
 		}
 
 		// Handle good request
 		log.Printf("Handling good request\n")
-		res := PrepareResponse()
 
+		// Start checking if URL/host is valid
+		// Check if given host exists
 		root, ok := s.VirtualHosts[req.Host]
 		var targetFile string
 		if ok {
@@ -150,34 +169,81 @@ func (s *Server) HandleRequest(conn net.Conn) {
 			log.Printf("Error raised for invalid host - \"%v\"\n", req.Host)
 			// Send 404 Not Found response
 			res := PrepareResponse()
-			res.HandlNotFound()
+			res.HandleNotFound()
 			err2 := res.Write(conn)
 			if err2 != nil {
 				log.Printf("Send 404 request for invalid host failed - %v", err)
 			}
+			continue
 		}
 
+		// Check if url exists/has error
 		targetFile = filepath.Clean(targetFile)
 		targetFileInfo, err := os.Stat(targetFile)
 		if os.IsNotExist(err) {
 			log.Printf("File does not exist - \"%v\"", req.URL)
-
+			// Send 404 Not Found response
+			res := PrepareResponse()
+			res.HandleNotFound()
+			err2 := res.Write(conn)
+			if err2 != nil {
+				log.Printf("Send 404 request for file path failed - %v", err)
+			}
+			continue
 		}
 		if err != nil {
-			// targetFileInfo.
+			log.Printf("Failed loading file - \"%v\"", req.URL)
+			// Send 404 Not Found response
+			res := PrepareResponse()
+			res.HandleNotFound()
+			err2 := res.Write(conn)
+			if err2 != nil {
+				log.Printf("Send 404 request for loading file failed - %v", err)
+			}
+			continue
 		}
 
+		// Append index.html if needed and check if url is valid for new path
 		if targetFileInfo.IsDir() {
 			targetFile += "index.html"
+			targetFileInfo, err = os.Stat(targetFile)
+			if os.IsNotExist(err) {
+				log.Printf("File does not exist - \"%v\"", req.URL)
+				// Send 404 Not Found response
+				res := PrepareResponse()
+				res.HandleNotFound()
+				err2 := res.Write(conn)
+				if err2 != nil {
+					log.Printf("Send 404 request for file path failed - %v", err)
+				}
+				continue
+			}
 		}
 
-		res.HandleOk()
-		res.SetBody(SampleResponseBody)
-
-		res.CreateHeaders()
-		err = res.Write(conn)
-		if err != nil {
-			fmt.Println(err)
+		// Check if url is in authorized direction
+		if strings.HasPrefix(targetFile, root) {
+			// Send 200 Ok response
+			res := PrepareResponse()
+			res.HandleOk()
+			err2 := res.SetHeadersAndBody(targetFile, targetFileInfo)
+			if err2 != nil {
+				log.Printf("Error occured when accessing file - \"%v\"", req.URL)
+			}
+			err2 = res.Write(conn)
+			if err2 != nil {
+				log.Printf("Send 404 request for unauthorized access failed - %v", err)
+			}
+			continue
+		} else {
+			log.Printf("File access is not authorized - \"%v\"", req.URL)
+			// Send 404 Not Found response
+			res := PrepareResponse()
+			res.HandleNotFound()
+			err2 := res.Write(conn)
+			if err2 != nil {
+				log.Printf("Send 404 request for unauthorized access failed - %v", err)
+			}
+			continue
 		}
 
 		// We'll never close the connection and handle as many requests for this connection
@@ -186,6 +252,7 @@ func (s *Server) HandleRequest(conn net.Conn) {
 
 }
 
+// Read and parse the request
 func ReadRequest(br *bufio.Reader) (req *Request, err error) {
 	req = &Request{}
 	req.init()
@@ -197,6 +264,7 @@ func ReadRequest(br *bufio.Reader) (req *Request, err error) {
 	}
 
 	// Process the request
+	// fmt.Println("Here 2!!!!!")
 	req.Method, req.URL, req.Proto, err = ParseRequestLine(line)
 	if err != nil {
 		return nil, err
@@ -262,6 +330,7 @@ func ReadRequest(br *bufio.Reader) (req *Request, err error) {
 	return req, nil
 }
 
+// Parse the intial request line
 func ParseRequestLine(line string) (string, string, string, error) {
 
 	fields := strings.SplitN(line, " ", 3)
@@ -272,14 +341,17 @@ func ParseRequestLine(line string) (string, string, string, error) {
 	return fields[0], fields[1], fields[2], nil
 }
 
+// Validate request method (if is "GET")
 func ValidateRequestMethod(method string) bool {
 	return method == "GET"
 }
 
+// Validate request method (if is "HTTP/1.1")
 func ValidateProtoVersion(ver string) bool {
 	return ver == ProtoVersion
 }
 
+// Validate request method (if starts with "/")
 func ValidateURL(url string) bool {
 	return strings.HasPrefix(url, "/")
 }
